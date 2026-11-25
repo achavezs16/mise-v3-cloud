@@ -358,3 +358,71 @@ def test_http_importacion_500_pedidos(nube, monkeypatch):
     assert datos["enviados"] == 500
     assert datos["fallidos"] == 0
     assert len(kinesis.registros) == 500
+
+
+def test_evento_delivery_compatible_con_procesador(nube):
+    import gzip
+    from pos_dominio import efectos
+    from boto3.dynamodb.types import TypeDeserializer
+
+    productor = cargar("pedidos-externos")
+    consumidor = cargar("consumidor-delivery")
+    procesador = cargar("procesador-eventos")
+
+    pedido = productor._generar_pedido_mock("demo", "local_01")
+
+    resultado = consumidor.lambda_handler(
+        evento_kinesis([pedido]), None
+    )
+
+    assert resultado["batchItemFailures"] == []
+
+    L = claves.local("demo", "local_01")
+
+    registro = nube.dynamo.get_item(
+        TableName="operacion",
+        Key={
+            "PK": {"S": claves.eventos(L)},
+            "SK": {"S": claves.sk_evento(pedido["event_id"])},
+        },
+    )["Item"]
+
+    deserializador = TypeDeserializer()
+
+    evento = {
+        k: deserializador.deserialize(v)
+        for k, v in registro.items()
+    }
+
+    assert evento["event_id"] == pedido["event_id"]
+    assert evento["tipo"] == "delivery.ingresado"
+    assert evento["origen"] == "delivery"
+    assert evento["expira_en"] > 0
+
+    assert efectos.agregados(evento) == []
+    assert efectos.avisos(evento) == []
+    assert efectos.mensaje_dte(evento) is None
+
+    resultado = procesador.lambda_handler({
+        "Records": [{
+            "eventName": "INSERT",
+            "dynamodb": {
+                "SequenceNumber": "1",
+                "NewImage": registro,
+            },
+        }],
+    }, None)
+
+    assert resultado["batchItemFailures"] == []
+
+    objeto = nube.s3.get_object(
+        Bucket=nube.bucket,
+        Key=efectos.clave_archivo(evento),
+    )
+
+    archivado = json.loads(
+        gzip.decompress(objeto["Body"].read())
+    )
+
+    assert archivado["event_id"] == pedido["event_id"]
+    assert archivado["tipo"] == "delivery.ingresado"
