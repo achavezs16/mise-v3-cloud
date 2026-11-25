@@ -1,0 +1,49 @@
+# Variables de entorno reales (los .env.example sí se versionan)
+.env
+.env.local
+*.env
+!*.env.example
+
+# Node / frontend
+node_modules/
+dist/
+dist-ssr/
+*.local
+npm-debug.log*
+
+# Python / backend
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Editores / SO
+.vscode/*
+!.vscode/extensions.json
+.idea
+.DS_Store
+Thumbs.db
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# Despliegue por CloudShell (valores de la cuenta e impresiones simuladas)
+valores-despliegue.env
+impresiones/
+
+# PWA
+pwa/public/config.json
+google-client-id.txt
+
+# Archivos locales de MISE v3
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.zip
+*.log
+__MACOSX/
+
+# Persistencia local del simulador de delivery
+bd_mise_almacen.json
