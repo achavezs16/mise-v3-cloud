@@ -24,6 +24,7 @@ from typing import Any
 import boto3
 from boto3.dynamodb.types import TypeSerializer
 from botocore.exceptions import ClientError
+from pos_dominio import claves, ids
 
 log = logging.getLogger("pos.consumidor_delivery")
 log.setLevel(os.environ.get("LOG_LEVEL", "INFO"))
@@ -45,14 +46,17 @@ def procesar_registro_kinesis(datos_pedido: dict[str, Any], dynamodb_client) -> 
     pedido_id = datos_pedido["pedido_id"]
     command_id = datos_pedido.get("command_id", f"CMD-{pedido_id}")
     event_id = datos_pedido.get("event_id", f"EVT-{pedido_id}")
-    L = f"TENANT#{tenant_id}#LOCAL#{local_id}"
+    L = claves.local(tenant_id, local_id)
     ahora_iso = datetime.now(timezone.utc).isoformat()
 
     pk_ped = f"{L}#PED#{pedido_id}"
     pk_cmd = f"{L}#CMD#{command_id}"
     pk_ext = f"{L}#EXTERNO#{plataforma}"
     pk_evt = f"{L}#EVT"
-    pk_imp = f"{L}#IMP#cocina"
+
+    items = datos_pedido.get("items", [])
+    if not items or len(items) > 90:
+        raise ValueError("El pedido debe contener entre 1 y 90 items")
 
     transact_items = []
 
@@ -100,6 +104,14 @@ def procesar_registro_kinesis(datos_pedido: dict[str, Any], dynamodb_client) -> 
                 "SK": "PEDIDO",
                 "tipo_item": "PEDIDO",
                 "tipo_pedido": "delivery",
+                "pedido_id": pedido_id,
+                "mesa_id": "DELIVERY",
+                "garzon_id": "DELIVERY",
+                "creado_en": datos_pedido.get("recibido_en", ahora_iso),
+                "n_items": len(items),
+                "n_tandas": 0,
+                "pagado": 0,
+                "propina_total": 0,
                 "plataforma": plataforma.lower(),
                 "orden_externa_id": orden_externa_id,
                 "estado": "abierto",
@@ -117,8 +129,8 @@ def procesar_registro_kinesis(datos_pedido: dict[str, Any], dynamodb_client) -> 
     })
 
     # 4. Ítems del pedido (máximo hasta completar el límite de 100 de DynamoDB)
-    for it in datos_pedido.get("items", [])[:90]:
-        item_id = it.get("item_id", f"IT-{ids_unico()}")
+    for it in items:
+        item_id = it.get("item_id") or ids.nuevo_ulid()
         transact_items.append({
             "Put": {
                 "TableName": TABLA_OPERACION,
@@ -126,6 +138,12 @@ def procesar_registro_kinesis(datos_pedido: dict[str, Any], dynamodb_client) -> 
                     "PK": pk_ped,
                     "SK": f"ITEM#{item_id}",
                     "tipo_item": "ITEM",
+                    "item_id": item_id,
+                    "categoria": it.get("categoria", "delivery"),
+                    "cuarto_id": it.get("cuarto_id", "DELIVERY"),
+                    "creado_en": datos_pedido.get("recibido_en", ahora_iso),
+                    "cobrado": 0,
+                    "observacion": it.get("notas", ""),
                     "producto_id": it["producto_id"],
                     "nombre": it["nombre"],
                     "precio_unitario": int(it["precio_unitario"]),
@@ -159,33 +177,25 @@ def procesar_registro_kinesis(datos_pedido: dict[str, Any], dynamodb_client) -> 
         }
     })
 
-    # 6. Ticket para la impresora de cocina
-    trabajo_id = f"TRAB-{pedido_id[:12]}"
-    transact_items.append({
-        "Put": {
-            "TableName": TABLA_OPERACION,
-            "Item": serializar({
-                "PK": pk_imp,
-                "SK": f"PEND#{trabajo_id}",
-                "tipo_item": "PENDIENTE_IMPRESION",
-                "tipo_ticket": "comanda_delivery",
-                "pedido_id": pedido_id,
-                "plataforma": plataforma.lower(),
-                "creado_en": ahora_iso,
-            }),
-        }
-    })
-
     try:
         dynamodb_client.transact_write_items(TransactItems=transact_items)
         log.info(f"Pedido delivery {pedido_id} ({plataforma}) guardado en DynamoDB.")
     except ClientError as e:
         codigo = e.response.get("Error", {}).get("Code")
-        if codigo == "TransactionCanceledException":
-            # Si falló la condición del CMD o de la orden externa, ya existe (idempotencia)
-            log.warning(f"Transacción ya aplicada o duplicada para {pedido_id}: {e}")
+        motivos = [
+            m.get("Code", "None")
+            for m in e.response.get("CancellationReasons", [])
+        ]
+        duplicado = (
+            codigo == "TransactionCanceledException"
+            and len(motivos) >= 2
+            and "ConditionalCheckFailed" in motivos[:2]
+            and all(m in ("None", "ConditionalCheckFailed") for m in motivos)
+        )
+        if duplicado:
+            log.warning(f"Pedido delivery duplicado: {pedido_id}")
         else:
-            raise e
+            raise
 
 
 def ids_unico() -> str:

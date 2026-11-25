@@ -24,7 +24,9 @@ ULID = re.compile(r"^[0-7][0-9A-HJKMNP-TV-Z]{25}$")
 
 def test_rutas_desde_la_tabla_documentada():
     filas = rutas_api.rutas()
-    assert len(filas) == 59
+    assert len(filas) == 61
+    assert ("GET", "/locales/{local_id}/delivery/importar", "pedidos-externos", True) in filas
+    assert ("POST", "/locales/{local_id}/delivery/importar", "pedidos-externos", True) in filas
     publicas = {(m, r) for m, r, _, jwt in filas if not jwt}
     assert ("GET", "/salud") in publicas
     assert all(r.startswith(("/salud", "/impresion/", "/publico/", "/webhooks/")) for _, r in publicas)

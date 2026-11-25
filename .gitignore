@@ -47,3 +47,6 @@ __MACOSX/
 
 # Persistencia local del simulador de delivery
 bd_mise_almacen.json
+
+# Entorno virtual macOS
+.venv-mac/
