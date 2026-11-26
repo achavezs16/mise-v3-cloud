@@ -336,6 +336,8 @@ def test_http_importacion_fallos_parciales(nube, monkeypatch):
 
     assert datos["cantidad_solicitada"] == 50
     assert datos["enviados"] == 48
+    assert len(datos["pedido_ids"]) == 48
+    assert len(set(datos["pedido_ids"])) == 48
     assert datos["fallidos"] == 2
 
 
@@ -356,6 +358,8 @@ def test_http_importacion_500_pedidos(nube, monkeypatch):
     datos = json.loads(respuesta["body"])
 
     assert datos["enviados"] == 500
+    assert len(datos["pedido_ids"]) == 500
+    assert len(set(datos["pedido_ids"])) == 500
     assert datos["fallidos"] == 0
     assert len(kinesis.registros) == 500
 
@@ -426,3 +430,117 @@ def test_evento_delivery_compatible_con_procesador(nube):
 
     assert archivado["event_id"] == pedido["event_id"]
     assert archivado["tipo"] == "delivery.ingresado"
+
+
+def test_seguimiento_persistencia_delivery(nube, monkeypatch):
+    from funciones.utiles import evento
+
+    funcion, kinesis = preparar_productor(monkeypatch)
+    consumidor = cargar("consumidor-delivery")
+
+    respuesta = funcion(evento(
+        "POST /locales/{local_id}/delivery/importar",
+        {"local_id": "local_01"},
+        {"cantidad": 10},
+        sub="admin1",
+    ))
+
+    assert respuesta["statusCode"] == 200
+    datos = json.loads(respuesta["body"])
+    pedido_ids = datos["pedido_ids"]
+
+    assert len(pedido_ids) == 10
+    assert len(set(pedido_ids)) == 10
+
+    def consultar():
+        respuesta = funcion(evento(
+            "POST /locales/{local_id}/delivery/consultar",
+            {"local_id": "local_01"},
+            {"pedido_ids": pedido_ids},
+            sub="admin1",
+        ))
+        assert respuesta["statusCode"] == 200, respuesta
+        return json.loads(respuesta["body"])
+
+    inicial = consultar()
+    assert inicial["persistidos"] == 0
+    assert inicial["pendientes"] == 10
+
+    pedidos = [
+        json.loads(r["Data"])
+        for r in kinesis.registros
+    ]
+
+    resultado = consumidor.lambda_handler(
+        evento_kinesis(pedidos[:5]), None
+    )
+    assert resultado["batchItemFailures"] == []
+
+    parcial = consultar()
+    assert parcial["persistidos"] == 5
+    assert parcial["pendientes"] == 5
+
+    resultado = consumidor.lambda_handler(
+        evento_kinesis(pedidos[5:]), None
+    )
+    assert resultado["batchItemFailures"] == []
+
+    final = consultar()
+    assert final["persistidos"] == 10
+    assert final["pendientes"] == 0
+    assert len(final["pedidos"]) == 10
+    assert {p["pedido_id"] for p in final["pedidos"]} == set(pedido_ids)
+    assert sum(p["total"] for p in final["pedidos"]) == sum(
+        p["total"] for p in pedidos
+    )
+
+
+def test_seguimiento_delivery_seguridad(nube, monkeypatch):
+    from funciones.utiles import evento
+
+    funcion, _ = preparar_productor(monkeypatch)
+
+    for sub, local_id, esperado in [
+        ("garzon1", "local_01", 403),
+        ("admin1", "otro_local", 403),
+        (None, "local_01", 401),
+    ]:
+        respuesta = funcion(evento(
+            "POST /locales/{local_id}/delivery/consultar",
+            {"local_id": local_id},
+            {"pedido_ids": []},
+            sub=sub,
+        ))
+
+        assert respuesta["statusCode"] == esperado, respuesta
+
+
+def test_seguimiento_delivery_aislamiento(nube, monkeypatch):
+    from funciones.utiles import evento
+
+    funcion, _ = preparar_productor(monkeypatch)
+    productor = cargar("pedidos-externos")
+    consumidor = cargar("consumidor-delivery")
+
+    pedido = productor._generar_pedido_mock(
+        "otro_tenant", "local_01"
+    )
+
+    resultado = consumidor.lambda_handler(
+        evento_kinesis([pedido]), None
+    )
+    assert resultado["batchItemFailures"] == []
+
+    respuesta = funcion(evento(
+        "POST /locales/{local_id}/delivery/consultar",
+        {"local_id": "local_01"},
+        {"pedido_ids": [pedido["pedido_id"]]},
+        sub="admin1",
+    ))
+
+    assert respuesta["statusCode"] == 200, respuesta
+    datos = json.loads(respuesta["body"])
+
+    assert datos["persistidos"] == 0
+    assert datos["pendientes"] == 1
+    assert datos["pedidos"] == []

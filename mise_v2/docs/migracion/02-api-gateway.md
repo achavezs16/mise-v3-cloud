@@ -128,6 +128,7 @@ salvo las públicas.
 | `POST /locales/{local_id}/mensajeria/fallidos/{mensaje_id}/descartar` | mensajeria | sí | D A |
 | `POST /locales/{local_id}/delivery/importar` | pedidos-externos | sí | D A |
 | `GET /locales/{local_id}/delivery/importar` | pedidos-externos | sí | D A |
+| `POST /locales/{local_id}/delivery/consultar` | pedidos-externos | sí | D A |
 | `GET /locales/{local_id}/reportes/turnos` | reportes | sí | D A |
 | `GET /locales/{local_id}/reportes/turnos/{turno_id}` | reportes | sí | D A |
 | `GET /locales/{local_id}/reportes/dias/{fecha}` | reportes | sí | D A |

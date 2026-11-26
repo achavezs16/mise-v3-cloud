@@ -165,6 +165,7 @@ def importar_delivery(peticion):
     LOTE = 25
     enviados = 0
     fallidos = 0
+    pedidos_enviados = []
     t0 = time.time()
 
     for i in range(0, cantidad, LOTE):
@@ -179,12 +180,16 @@ def importar_delivery(peticion):
         respuesta = kinesis.put_records(StreamName=STREAM_DELIVERY, Records=registros)
         enviados += len(registros) - respuesta.get("FailedRecordCount", 0)
         fallidos += respuesta.get("FailedRecordCount", 0)
+        for pedido, registro in zip(pedidos_lote, respuesta["Records"]):
+            if not registro.get("ErrorCode"):
+                pedidos_enviados.append(pedido["pedido_id"])
 
     ms = int((time.time() - t0) * 1000)
     return 200, {
         "resultado": "IMPORTACION_COMPLETADA",
         "stream": STREAM_DELIVERY,
         "cantidad_solicitada": cantidad,
+        "pedido_ids": pedidos_enviados,
         "enviados": enviados,
         "fallidos": fallidos,
         "duracion_ms": ms,
@@ -216,6 +221,85 @@ def estado_delivery(peticion):
             "activo": False,
             "mensaje": "El stream de delivery no ha sido creado. Ejecuta desplegar_kinesis.sh en CloudShell.",
         }
+
+
+
+@app.ruta("POST /locales/{local_id}/delivery/consultar")
+def consultar_delivery(peticion):
+    """Confirma la persistencia de pedidos enviados a Kinesis."""
+    ctx = api.contexto(peticion, accion="admin.estructura")
+    L = claves.local(ctx.tenant_id, ctx.local_id)
+
+    cuerpo = peticion.json()
+    pedido_ids = cuerpo.get("pedido_ids", [])
+
+    if not isinstance(pedido_ids, list) or len(pedido_ids) > 500:
+        raise ErrorDominio("Se permiten hasta 500 identificadores")
+
+    pedido_ids = list(dict.fromkeys(
+        claves.validar_id(p, "pedido_id") for p in pedido_ids
+    ))
+
+    tabla = os.environ["TABLA_OPERACION"]
+    dynamo = aws.cliente("dynamodb")
+    pedidos = []
+    sin_confirmar = 0
+
+    for i in range(0, len(pedido_ids), 100):
+        claves_pedidos = [
+            {
+                "PK": {"S": claves.pedido(L, pedido_id)},
+                "SK": {"S": claves.SK_PEDIDO},
+            }
+            for pedido_id in pedido_ids[i:i + 100]
+        ]
+
+        respuesta = dynamo.batch_get_item(
+            RequestItems={
+                tabla: {
+                    "Keys": claves_pedidos,
+                    "ConsistentRead": True,
+                    "ProjectionExpression":
+                        "#pid, #plat, #total, #items, #fecha, #origen",
+                    "ExpressionAttributeNames": {
+                        "#pid": "pedido_id",
+                        "#plat": "plataforma",
+                        "#total": "total",
+                        "#items": "n_items",
+                        "#fecha": "recibido_en",
+                        "#origen": "origen",
+                    },
+                }
+            }
+        )
+
+        sin_confirmar += len(
+            respuesta.get("UnprocessedKeys", {})
+            .get(tabla, {}).get("Keys", [])
+        )
+
+        for item in respuesta.get("Responses", {}).get(tabla, []):
+            if item.get("origen", {}).get("S") != "kinesis.stream":
+                continue
+
+            pedidos.append({
+                "pedido_id": item["pedido_id"]["S"],
+                "plataforma": item["plataforma"]["S"],
+                "total": int(item["total"]["N"]),
+                "n_items": int(item["n_items"]["N"]),
+                "recibido_en": item["recibido_en"]["S"],
+                "estado": "persistido",
+            })
+
+    pedidos.sort(key=lambda p: p["recibido_en"], reverse=True)
+
+    return 200, {
+        "consultados": len(pedido_ids),
+        "persistidos": len(pedidos),
+        "pendientes": len(pedido_ids) - len(pedidos),
+        "claves_sin_procesar": sin_confirmar,
+        "pedidos": pedidos,
+    }
 
 
 lambda_handler = app

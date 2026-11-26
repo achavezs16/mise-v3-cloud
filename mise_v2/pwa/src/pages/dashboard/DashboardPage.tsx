@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react"
 import { Link } from "react-router-dom"
 import { turnoActual } from "@/api/caja"
-import { importarDelivery, estadoDelivery, type EstadoDelivery, type ResultadoImportacion } from "@/api/delivery"
+import { importarDelivery, estadoDelivery, consultarDelivery, type EstadoDelivery, type ResultadoImportacion, type SeguimientoDelivery } from "@/api/delivery"
 import type { Turno } from "@/api/tipos"
 import { dia, type ResumenDia } from "@/api/reportes"
 import { Aviso } from "@/components/comun/Aviso"
@@ -36,6 +36,9 @@ export default function DashboardPage() {
   const [importando, setImportando] = useState(false)
   const [resultado, setResultado] = useState<ResultadoImportacion | null>(null)
   const [errorDelivery, setErrorDelivery] = useState<string | null>(null)
+  const [seguimiento, setSeguimiento] = useState<SeguimientoDelivery | null>(null)
+  const [verificando, setVerificando] = useState(false)
+  const [avisoSeguimiento, setAvisoSeguimiento] = useState<string | null>(null)
 
   useEffect(() => {
     turnoActual(localId).then(setTurno, (e: unknown) => setError(mensajeDeError(e)))
@@ -47,15 +50,69 @@ export default function DashboardPage() {
     setImportando(true)
     setResultado(null)
     setErrorDelivery(null)
+    setSeguimiento(null)
+    setAvisoSeguimiento(null)
+    setVerificando(false)
     try {
       const res = await importarDelivery(localId, cantidad)
       setResultado(res)
+      setVerificando(res.pedido_ids.length > 0)
     } catch (e: unknown) {
       setErrorDelivery(mensajeDeError(e))
     } finally {
       setImportando(false)
     }
   }
+
+  useEffect(() => {
+    if (!resultado?.pedido_ids?.length) return
+
+    const ids = resultado.pedido_ids
+    let cancelado = false
+    let temporizador: ReturnType<typeof setTimeout> | undefined
+    const inicio = Date.now()
+
+    const consultar = async () => {
+      if (cancelado) return
+
+      try {
+        const datos = await consultarDelivery(localId, ids)
+        if (cancelado) return
+
+        setSeguimiento(datos)
+
+        if (datos.pendientes === 0) {
+          setVerificando(false)
+          return
+        }
+
+        if (Date.now() - inicio >= 30000) {
+          setAvisoSeguimiento("Tiempo de seguimiento agotado. Los pedidos pendientes podrían continuar procesándose.")
+          setVerificando(false)
+          return
+        }
+
+        temporizador = setTimeout(consultar, 1000)
+      } catch (e: unknown) {
+        if (cancelado) return
+        setAvisoSeguimiento(mensajeDeError(e))
+        setVerificando(false)
+      }
+    }
+
+    temporizador = setTimeout(consultar, 0)
+
+    return () => {
+      cancelado = true
+      if (temporizador !== undefined) clearTimeout(temporizador)
+    }
+  }, [resultado, localId])
+
+  const persistidos = seguimiento?.persistidos ?? 0
+  const pendientes = seguimiento?.pendientes ?? resultado?.enviados ?? 0
+  const progreso = resultado?.enviados
+    ? Math.round(persistidos / resultado.enviados * 100)
+    : 0
 
   const r = resumen?.resumen
   return (
@@ -112,6 +169,7 @@ export default function DashboardPage() {
                 <button
                   key={n}
                   onClick={() => setCantidad(n)}
+                  disabled={importando || verificando}
                   className={`rounded-lg border px-3 py-1 text-sm transition ${
                     cantidad === n
                       ? "border-teal-600 bg-teal-600 text-white"
@@ -124,23 +182,138 @@ export default function DashboardPage() {
             </div>
             <button
               onClick={handleImportar}
-              disabled={importando || !streamEstado?.activo}
+              disabled={importando || verificando || !streamEstado?.activo}
               className="rounded-xl bg-teal-600 px-5 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-teal-700 disabled:opacity-50 disabled:cursor-not-allowed"
             >
-              {importando ? "Enviando a Kinesis…" : "⬆ Importar datos de delivery"}
+              {importando ? "Enviando a Kinesis…" : verificando ? "Verificando persistencia…" : "⬆ Importar datos de delivery"}
             </button>
           </div>
 
-          {/* Resultado de la importación */}
+          {/* Monitor de streaming y persistencia */}
           {resultado && (
-            <div className="rounded-xl border border-green-200 bg-green-50 p-4 space-y-1">
-              <p className="text-sm font-semibold text-green-800">✅ {resultado.mensaje}</p>
-              <div className="grid grid-cols-2 gap-x-6 gap-y-1 text-sm text-green-700 mt-1">
-                <span>Enviados al stream</span><span className="font-mono font-bold">{resultado.enviados}</span>
-                <span>Fallidos</span><span className="font-mono">{resultado.fallidos}</span>
-                <span>Duración</span><span className="font-mono">{resultado.duracion_ms} ms</span>
-                <span>Plataformas</span>
-                <span>{resultado.plataformas.map((p) => `${ICONOS[p] ?? ""} ${p}`).join(" · ")}</span>
+            <div className="space-y-4 rounded-xl border border-neutral-200 bg-neutral-50 p-4">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <p className="font-semibold text-neutral-800">
+                  Monitor de streaming
+                </p>
+                <span className="rounded-full bg-white px-3 py-1 text-xs font-medium text-neutral-600 border">
+                  {verificando ? "Procesando"
+                    : resultado.fallidos > 0 || pendientes > 0 ? "Confirmación parcial"
+                    : "Completado"}
+                </span>
+              </div>
+
+              <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
+                {[
+                  ["Enviados a Kinesis", resultado.enviados, "text-teal-700"],
+                  ["Persistidos en DynamoDB", persistidos, "text-green-700"],
+                  ["Pendientes", pendientes, "text-amber-600"],
+                  ["Fallos de envío", resultado.fallidos, "text-red-600"],
+                ].map(([etiqueta, valor, color]) => (
+                  <div key={etiqueta} className="rounded-xl border bg-white p-3">
+                    <p className="text-xs text-neutral-500">{etiqueta}</p>
+                    <p className={`mt-1 text-2xl font-bold tabular-nums ${color}`}>
+                      {valor}
+                    </p>
+                  </div>
+                ))}
+              </div>
+
+              <div className="space-y-2">
+                <div className="flex justify-between text-sm font-medium">
+                  <span>Progreso de persistencia</span>
+                  <span>{progreso}%</span>
+                </div>
+                <div
+                  className="h-3 overflow-hidden rounded-full bg-neutral-200"
+                  role="progressbar"
+                  aria-label="Persistencia en DynamoDB"
+                  aria-valuenow={progreso}
+                  aria-valuemin={0}
+                  aria-valuemax={100}
+                >
+                  <div
+                    className="h-full rounded-full bg-teal-600 transition-all duration-300"
+                    style={{ width: `${progreso}%` }}
+                  />
+                </div>
+                <p className="text-xs text-neutral-500">
+                  {persistidos} de {resultado.enviados} pedidos enviados confirmados en DynamoDB.
+                </p>
+              </div>
+
+              <div className="flex flex-wrap gap-x-5 gap-y-2 text-xs text-neutral-600">
+                <span>Solicitados: {resultado.cantidad_solicitada}</span>
+                <span>Tiempo de envío: {resultado.duracion_ms} ms</span>
+                <span>Stream: {resultado.stream}</span>
+              </div>
+
+              {avisoSeguimiento && (
+                <p className="rounded-lg bg-amber-50 p-3 text-sm text-amber-800">
+                  {avisoSeguimiento}
+                </p>
+              )}
+
+              <div className="space-y-2">
+                <h3 className="text-sm font-semibold">Pedidos confirmados</h3>
+
+                <div className="flex flex-wrap gap-2">
+                  {Object.entries(ICONOS).map(([plataforma, icono]) => (
+                    <span key={plataforma} className="rounded-lg border bg-white px-3 py-1 text-xs">
+                      {icono} {plataforma}: {seguimiento?.pedidos.filter(
+                        (p) => p.plataforma === plataforma
+                      ).length ?? 0}
+                    </span>
+                  ))}
+                </div>
+
+                {seguimiento && seguimiento.pedidos.length > 0 ? (
+                  <div className="max-h-80 overflow-auto rounded-lg border bg-white">
+                    <table className="w-full text-left text-xs">
+                      <thead className="sticky top-0 bg-neutral-100">
+                        <tr>
+                          {["ID del pedido", "Plataforma", "Ítems", "Total", "Estado"].map((h) => (
+                            <th key={h} className="whitespace-nowrap px-3 py-2 font-semibold">
+                              {h}
+                            </th>
+                          ))}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {seguimiento.pedidos.map((pedido) => (
+                          <tr key={pedido.pedido_id} className="border-t">
+                            <td className="whitespace-nowrap px-3 py-2 font-mono">
+                              {pedido.pedido_id}
+                            </td>
+                            <td className="whitespace-nowrap px-3 py-2">
+                              {ICONOS[pedido.plataforma] ?? ""} {pedido.plataforma}
+                            </td>
+                            <td className="px-3 py-2">{pedido.n_items}</td>
+                            <td className="whitespace-nowrap px-3 py-2">
+                              {pesos(pedido.total)}
+                            </td>
+                            <td className="px-3 py-2 font-medium text-green-700">
+                              Persistido
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                ) : (
+                  <p className="rounded-lg border bg-white p-3 text-sm text-neutral-500">
+                    Aún no hay pedidos confirmados.
+                  </p>
+                )}
+
+                <p className="text-right text-sm font-semibold">
+                  Total de pedidos confirmados: {pesos(
+                    seguimiento?.pedidos.reduce((total, p) => total + p.total, 0) ?? 0
+                  )}
+                </p>
+                <p className="text-xs text-neutral-500">
+                  Pedidos simulados. Estos montos no corresponden a ventas realizadas.
+                </p>
               </div>
             </div>
           )}

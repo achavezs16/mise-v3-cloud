@@ -99,7 +99,7 @@ def test_primer_despliegue_crea_todo(tmp_path):
     assert _contar(llamadas, "lambda", "create-alias") == 15
     assert _contar(llamadas, "lambda", "create-event-source-mapping") == 4
     assert _contar(llamadas, "apigatewayv2", "create-integration") == 10
-    assert _contar(llamadas, "apigatewayv2", "create-route") == 61
+    assert _contar(llamadas, "apigatewayv2", "create-route") == 62
     assert _contar(llamadas, "apigatewayv2", "create-deployment") == 1
     assert _contar(llamadas, "cloudwatch", "put-metric-alarm") == 9
     assert _contar(llamadas, "athena", "start-query-execution") == 2
@@ -127,7 +127,7 @@ def test_reejecucion_actualiza_sin_duplicar(tmp_path):
     assert _contar(llamadas, "lambda", "update-alias") == 15
     assert _contar(llamadas, "lambda", "create-event-source-mapping") == 0
     assert _contar(llamadas, "apigatewayv2", "create-route") == 0
-    assert _contar(llamadas, "apigatewayv2", "update-route") == 61
+    assert _contar(llamadas, "apigatewayv2", "update-route") == 62
     assert _contar(llamadas, "apigatewayv2", "update-authorizer") == 0  # sin GOOGLE_CLIENT_ID no se toca
     # Tablas que ya existían sin GSI1 (creadas a mano): el índice se agrega con su proyección.
     indices = [a for a in llamadas if a[:2] == ["dynamodb", "update-table"] and "--global-secondary-index-updates" in a]
