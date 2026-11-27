@@ -22,6 +22,11 @@ const ACCESOS = [
 
 const CANTIDADES = [10, 50, 100, 500]
 const ICONOS: Record<string, string> = { UBEREATS: "🟢", RAPPI: "🟠", PEDIDOSYA: "🔴" }
+const PLATAFORMAS: Record<string, string> = {
+  UBEREATS: "Uber Eats",
+  RAPPI: "Rappi",
+  PEDIDOSYA: "PedidosYa",
+}
 
 export default function DashboardPage() {
   const { local } = useSesion()
@@ -38,6 +43,7 @@ export default function DashboardPage() {
   const [errorDelivery, setErrorDelivery] = useState<string | null>(null)
   const [seguimiento, setSeguimiento] = useState<SeguimientoDelivery | null>(null)
   const [verificando, setVerificando] = useState(false)
+  const [filasVisibles, setFilasVisibles] = useState(0)
   const [avisoSeguimiento, setAvisoSeguimiento] = useState<string | null>(null)
 
   useEffect(() => {
@@ -51,6 +57,7 @@ export default function DashboardPage() {
     setResultado(null)
     setErrorDelivery(null)
     setSeguimiento(null)
+    setFilasVisibles(0)
     setAvisoSeguimiento(null)
     setVerificando(false)
     try {
@@ -108,6 +115,30 @@ export default function DashboardPage() {
     }
   }, [resultado, localId])
 
+  const totalConfirmados = seguimiento?.pedidos.length ?? 0
+  const presentando = filasVisibles < totalConfirmados
+
+  useEffect(() => {
+    if (!presentando) return
+
+    if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+      setFilasVisibles(totalConfirmados)
+      return
+    }
+
+    const cantidadTotal = resultado?.enviados ?? 10
+    const intervalo = cantidadTotal <= 10 ? 250 : 100
+    const paso = Math.max(1, Math.ceil(cantidadTotal / 25))
+
+    const temporizador = window.setInterval(() => {
+      setFilasVisibles((actual) =>
+        Math.min(actual + paso, totalConfirmados)
+      )
+    }, intervalo)
+
+    return () => window.clearInterval(temporizador)
+  }, [presentando, totalConfirmados, resultado])
+
   const persistidos = seguimiento?.persistidos ?? 0
   const pendientes = seguimiento?.pendientes ?? resultado?.enviados ?? 0
   const progreso = resultado?.enviados
@@ -136,29 +167,26 @@ export default function DashboardPage() {
       </div>
 
       {/* ── Panel Importar Datos de Apps de Delivery (Kinesis) ── */}
-      <Tarjeta titulo="📦 Importar datos de apps de delivery">
+      <Tarjeta titulo="📦 Importar pedidos de delivery">
         <div className="space-y-4">
 
           {/* Estado del stream */}
           <div className="flex items-center gap-2 text-sm">
             <span className={`inline-block h-2.5 w-2.5 rounded-full ${streamEstado?.activo ? "bg-green-500" : "bg-red-400"}`} />
             {streamEstado === null
-              ? <span className="text-neutral-500">Verificando stream…</span>
+              ? <span className="text-neutral-500">Verificando disponibilidad…</span>
               : streamEstado.activo
                 ? <span className="text-green-700 font-medium">
-                    Kinesis <code className="bg-neutral-100 px-1 rounded">{streamEstado.stream}</code> activo
-                    · {streamEstado.shards} shard{streamEstado.shards !== 1 ? "s" : ""}
-                    · retención {streamEstado.retencion_horas}h
+                    Servicio de importación disponible
                   </span>
-                : <span className="text-red-600">{streamEstado.mensaje ?? "Stream no disponible"}</span>
+                : <span className="text-red-600">Servicio de importación no disponible</span>
             }
           </div>
 
           <p className="text-sm text-neutral-600">
-            Genera pedidos simulados de <span className="font-medium">🟢 Uber Eats</span>,{" "}
+            Importa y consulta pedidos simulados de <span className="font-medium">🟢 Uber Eats</span>,{" "}
             <span className="font-medium">🟠 Rappi</span> y{" "}
-            <span className="font-medium">🔴 PedidosYa</span> y los envía al stream de Amazon Kinesis,
-            donde el consumidor Lambda los escribe en DynamoDB.
+            <span className="font-medium">🔴 PedidosYa</span> desde un solo lugar.
           </p>
 
           {/* Selector de cantidad + botón */}
@@ -169,7 +197,7 @@ export default function DashboardPage() {
                 <button
                   key={n}
                   onClick={() => setCantidad(n)}
-                  disabled={importando || verificando}
+                  disabled={importando || verificando || presentando}
                   className={`rounded-lg border px-3 py-1 text-sm transition ${
                     cantidad === n
                       ? "border-teal-600 bg-teal-600 text-white"
@@ -182,10 +210,13 @@ export default function DashboardPage() {
             </div>
             <button
               onClick={handleImportar}
-              disabled={importando || verificando || !streamEstado?.activo}
+              disabled={importando || verificando || presentando || !streamEstado?.activo}
               className="rounded-xl bg-teal-600 px-5 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-teal-700 disabled:opacity-50 disabled:cursor-not-allowed"
             >
-              {importando ? "Enviando a Kinesis…" : verificando ? "Verificando persistencia…" : "⬆ Importar datos de delivery"}
+              {importando ? "Enviando pedidos…"
+                : verificando ? "Confirmando pedidos…"
+                : presentando ? "Mostrando pedidos…"
+                : "⬇ Importar pedidos"}
             </button>
           </div>
 
@@ -194,7 +225,7 @@ export default function DashboardPage() {
             <div className="space-y-4 rounded-xl border border-neutral-200 bg-neutral-50 p-4">
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <p className="font-semibold text-neutral-800">
-                  Monitor de streaming
+                  Seguimiento de importación
                 </p>
                 <span className="rounded-full bg-white px-3 py-1 text-xs font-medium text-neutral-600 border">
                   {verificando ? "Procesando"
@@ -205,10 +236,10 @@ export default function DashboardPage() {
 
               <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
                 {[
-                  ["Enviados a Kinesis", resultado.enviados, "text-teal-700"],
-                  ["Persistidos en DynamoDB", persistidos, "text-green-700"],
-                  ["Pendientes", pendientes, "text-amber-600"],
-                  ["Fallos de envío", resultado.fallidos, "text-red-600"],
+                  ["Pedidos enviados", resultado.enviados, "text-teal-700"],
+                  ["Pedidos registrados", persistidos, "text-green-700"],
+                  ["En proceso", pendientes, "text-amber-600"],
+                  ["Errores de envío", resultado.fallidos, "text-red-600"],
                 ].map(([etiqueta, valor, color]) => (
                   <div key={etiqueta} className="rounded-xl border bg-white p-3">
                     <p className="text-xs text-neutral-500">{etiqueta}</p>
@@ -221,13 +252,13 @@ export default function DashboardPage() {
 
               <div className="space-y-2">
                 <div className="flex justify-between text-sm font-medium">
-                  <span>Progreso de persistencia</span>
+                  <span>Progreso de importación</span>
                   <span>{progreso}%</span>
                 </div>
                 <div
                   className="h-3 overflow-hidden rounded-full bg-neutral-200"
                   role="progressbar"
-                  aria-label="Persistencia en DynamoDB"
+                  aria-label="Progreso de importación"
                   aria-valuenow={progreso}
                   aria-valuemin={0}
                   aria-valuemax={100}
@@ -238,15 +269,13 @@ export default function DashboardPage() {
                   />
                 </div>
                 <p className="text-xs text-neutral-500">
-                  {persistidos} de {resultado.enviados} pedidos enviados confirmados en DynamoDB.
+                  {persistidos} de {resultado.enviados} pedidos enviados registrados correctamente.
                 </p>
               </div>
 
-              <div className="flex flex-wrap gap-x-5 gap-y-2 text-xs text-neutral-600">
-                <span>Solicitados: {resultado.cantidad_solicitada}</span>
-                <span>Tiempo de envío: {resultado.duracion_ms} ms</span>
-                <span>Stream: {resultado.stream}</span>
-              </div>
+              <p className="text-xs text-neutral-600">
+                Pedidos solicitados: {resultado.cantidad_solicitada}
+              </p>
 
               {avisoSeguimiento && (
                 <p className="rounded-lg bg-amber-50 p-3 text-sm text-amber-800">
@@ -255,13 +284,18 @@ export default function DashboardPage() {
               )}
 
               <div className="space-y-2">
-                <h3 className="text-sm font-semibold">Pedidos confirmados</h3>
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <h3 className="text-sm font-semibold">Pedidos registrados</h3>
+                  <span className="text-xs text-neutral-500">
+                    Mostrando {Math.min(filasVisibles, totalConfirmados)} de {totalConfirmados}
+                  </span>
+                </div>
 
                 <div className="flex flex-wrap gap-2">
                   {Object.entries(ICONOS).map(([plataforma, icono]) => (
                     <span key={plataforma} className="rounded-lg border bg-white px-3 py-1 text-xs">
-                      {icono} {plataforma}: {seguimiento?.pedidos.filter(
-                        (p) => p.plataforma === plataforma
+                      {icono} {PLATAFORMAS[plataforma]}: {seguimiento?.pedidos.filter(
+                        (p) => p.plataforma.toUpperCase() === plataforma
                       ).length ?? 0}
                     </span>
                   ))}
@@ -280,20 +314,23 @@ export default function DashboardPage() {
                         </tr>
                       </thead>
                       <tbody>
-                        {seguimiento.pedidos.map((pedido) => (
+                        {seguimiento.pedidos
+                          .slice(Math.max(0, totalConfirmados - filasVisibles))
+                          .map((pedido) => (
                           <tr key={pedido.pedido_id} className="border-t">
                             <td className="whitespace-nowrap px-3 py-2 font-mono">
                               {pedido.pedido_id}
                             </td>
                             <td className="whitespace-nowrap px-3 py-2">
-                              {ICONOS[pedido.plataforma] ?? ""} {pedido.plataforma}
+                              {ICONOS[pedido.plataforma.toUpperCase()] ?? ""}{" "}
+                              {PLATAFORMAS[pedido.plataforma.toUpperCase()] ?? pedido.plataforma}
                             </td>
                             <td className="px-3 py-2">{pedido.n_items}</td>
                             <td className="whitespace-nowrap px-3 py-2">
                               {pesos(pedido.total)}
                             </td>
                             <td className="px-3 py-2 font-medium text-green-700">
-                              Persistido
+                              Registrado
                             </td>
                           </tr>
                         ))}
@@ -302,12 +339,12 @@ export default function DashboardPage() {
                   </div>
                 ) : (
                   <p className="rounded-lg border bg-white p-3 text-sm text-neutral-500">
-                    Aún no hay pedidos confirmados.
+                    Aún no hay pedidos registrados.
                   </p>
                 )}
 
                 <p className="text-right text-sm font-semibold">
-                  Total de pedidos confirmados: {pesos(
+                  Total de pedidos registrados: {pesos(
                     seguimiento?.pedidos.reduce((total, p) => total + p.total, 0) ?? 0
                   )}
                 </p>
@@ -315,6 +352,42 @@ export default function DashboardPage() {
                   Pedidos simulados. Estos montos no corresponden a ventas realizadas.
                 </p>
               </div>
+
+              <details className="border-t pt-3 text-xs text-neutral-500">
+                <summary className="cursor-pointer font-medium">
+                  Detalles técnicos
+                </summary>
+                <dl className="mt-3 grid gap-2 sm:grid-cols-2">
+                  <div>
+                    <dt className="font-medium">Servicio de streaming</dt>
+                    <dd>Amazon Kinesis</dd>
+                  </div>
+                  <div>
+                    <dt className="font-medium">Stream</dt>
+                    <dd>{resultado.stream}</dd>
+                  </div>
+                  <div>
+                    <dt className="font-medium">Shards</dt>
+                    <dd>{streamEstado?.shards ?? "—"}</dd>
+                  </div>
+                  <div>
+                    <dt className="font-medium">Retención</dt>
+                    <dd>{streamEstado?.retencion_horas ?? "—"} horas</dd>
+                  </div>
+                  <div>
+                    <dt className="font-medium">Tiempo de envío</dt>
+                    <dd>{resultado.duracion_ms} ms</dd>
+                  </div>
+                  <div>
+                    <dt className="font-medium">Procesamiento y almacenamiento</dt>
+                    <dd>AWS Lambda · Amazon DynamoDB</dd>
+                  </div>
+                </dl>
+                <p className="mt-3">
+                  Los indicadores reflejan confirmaciones reales.
+                  La aparición progresiva de las filas es únicamente visual.
+                </p>
+              </details>
             </div>
           )}
 
